@@ -48,19 +48,7 @@ def compute_points_score(actor)
     (goals * 50) + (assists * 25) + (saves * 25) + (shots * 15)
 end
 
-# Determines a players team.
-def find_player_team(octane_stats, name)
-    octane_stats.each{ |stats, ind|
-        if stats['Name']['Value'] == name then
-            return stats['Team']['Value'] == 1 ? "orange" : "blue"
-        end
-    }
-    raise "ERROR: Couldn't find player_stats for " + name
-end
-
 # Selects the closest value in list to the target.
-# NOTE: Redo this method...
-
 def select_closest_over(list, target)
     list.each{ |val|
         return val if val > target
@@ -102,7 +90,7 @@ class ReplayReducer
     # ground, crossbar, aerial
     @@height_bounds = [120, 250, 600]
 
-    def initialize(oct_json)
+    def initialize(file_names)
         @file = File.read(file_name)
         @data = JSON.parse(@file)
         #@data = oct_json
@@ -133,6 +121,7 @@ class ReplayReducer
 
         # Maps team data to their team ID in actors.
         @team_info = {}
+        @team_count = {'orange' => 0, 'blue' => 0, 'unknown' => 0}
 
         # Maps the current frame to the players boost value.
         @boost_data = {}
@@ -519,6 +508,7 @@ class ReplayReducer
     def record_player_data(playing_players)
         @player_actors.each{ |key, actor|
             if playing_players.include?(key.to_i) then
+                c = (actor.has_key?('TAGame.PRI_TA:ClientLoadouts')) ? actor['TAGame.PRI_TA:ClientLoadouts']['Value']['Loadout1']['Value']['Body']['Name'] : "???"
                 player_data = {
                     'Name' => actor['Engine.PlayerReplicationInfo:PlayerName']['Value'],
                     'Score' => check_for_stat(actor, 'TAGame.PRI_TA:MatchScore'),
@@ -530,10 +520,16 @@ class ReplayReducer
                     'Play_Score' => check_for_stat(actor, 'TAGame.PRI_TA:MatchScore') - compute_points_score(actor),
                     'ID' => @uuID_to_player_id[key],
                     'Team' => find_player_team(@player_stats, actor['Engine.PlayerReplicationInfo:PlayerName']['Value']),
-                    'Car' => actor['TAGame.PRI_TA:ClientLoadouts']['Value']['Loadout1']['Value']['Body']['Name']}
+                    'Car' => c}
                 @important_data['player_data'][player_data['ID']] = player_data
             end
         }
+        if @team_count['unknown'] > 0 then
+            missing_team = get_missing_team()
+            @important_data['player_data'].each{ |uuID, p_data|
+                p_data['Team'] = missing_team if p_data['Team'] == "unknown"
+            }
+        end
     end
 
     def record_boost_data(playing_players)
@@ -745,9 +741,6 @@ class ReplayReducer
             kickoff_check = (@time_map[select_closest(@time_map.keys, data['frame'])] - @kickoff_time_delay)
             if(@time_position_data.has_key?(kickoff_check)) then
                 tally_kickoff(kickoff_check)
-            # Not sure if I need to error here. Should just ignore OT kickoff?
-            else
-                raise "ERROR: Can't find position data for second after kickoff."
             end
         }
 
@@ -780,6 +773,22 @@ class ReplayReducer
                 end
             end
         }
+
+        @important_data['player_data'].each{ |team, data|
+            data.each{ |p_id, p_data|
+                if !p_data.has_key?('Camera') then
+                    p_data['Camera'] = {
+                        'Height' => 100,
+                        'FOV' => 90,
+                        'Stiffness' => 0,
+                        'Angle' => -5,
+                        'Distance' => 250,
+                        'SwivelSpeed' => 2.5,
+                    }
+                end
+            }
+        }
+
     end
 
     def record_ball_proximity()
@@ -941,6 +950,8 @@ class ReplayReducer
             goal["Position"] = {'x' => pos_data['x'],
                                 'y' => pos_data['y'],
                                 'z' => pos_data['z']}
+
+            goal["OT"] = (@overtime and (@important_data.length - 1 == num))
         }
     end
 
@@ -961,6 +972,28 @@ class ReplayReducer
             end
         }
         false
+    end
+
+    # Determines a players team.
+    def find_player_team(octane_stats, name)
+        octane_stats.each{ |stats, ind|
+            if stats['Name']['Value'] == name then
+                if stats['Team']['Value'] == 1 then
+                    @team_count['orange'] = @team_count['orange'] + 1
+                    return "orange"
+                else
+                    @team_count['blue'] = @team_count['blue'] + 1
+                    return "blue"
+                end
+            end
+        }
+        # Set to unknown for now, we will find out later.
+        @team_count['unknown'] = @team_count['unknown'] + 1
+        return "unknown"
+    end
+
+    def get_missing_team()
+        (@team_count['orange'] > @team_count['blue']) ? 'blue' : 'orange'
     end
 
 end
